@@ -68,27 +68,78 @@ export default function TimeTimer() {
   const touchStartY = useRef<number | null>(null)
   const tapCount = useRef<number>(0)
   const tapTimer = useRef<NodeJS.Timeout | null>(null)
+  const timerStartRef = useRef<number | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
 
   useEffect(() => {
     setStats(getTomatoStats())
   }, [])
 
+  // Replace the existing timer effect with this new implementation
   useEffect(() => {
-    let interval: NodeJS.Timeout
-    if (state.isRunning && state.timeLeft > 0) {
-      interval = setInterval(() => {
-        setState((prev) => ({ ...prev, timeLeft: prev.timeLeft - 1 }))
-      }, 1000)
-    } else if (state.timeLeft === 0) {
-      setState((prev) => ({ ...prev, isRunning: false }))
-      setStats(updateTomatoStats(stats))
+    const updateTimer = () => {
+      if (!state.isRunning || !timerStartRef.current) return
+
+      const now = Date.now()
+      const elapsed = Math.floor((now - timerStartRef.current) / 1000)
+      const newTimeLeft = Math.max(0, state.setTime - elapsed)
+
+      if (newTimeLeft !== state.timeLeft) {
+        setState((prev) => ({ ...prev, timeLeft: newTimeLeft }))
+      }
+
+      if (newTimeLeft === 0) {
+        setState((prev) => ({ ...prev, isRunning: false }))
+        setStats(updateTomatoStats(stats))
+        timerStartRef.current = null
+        return
+      }
+
+      animationFrameRef.current = requestAnimationFrame(updateTimer)
     }
-    return () => clearInterval(interval)
-  }, [state.isRunning, state.timeLeft, stats])
+
+    if (state.isRunning && state.timeLeft > 0) {
+      if (!timerStartRef.current) {
+        timerStartRef.current = Date.now() - (state.setTime - state.timeLeft) * 1000
+      }
+      animationFrameRef.current = requestAnimationFrame(updateTimer)
+    } else {
+      timerStartRef.current = null
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+
+    // Cleanup function
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+  }, [state.isRunning, state.timeLeft, state.setTime, stats])
+
+  // Add visibility change handler
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && state.isRunning) {
+        setState((prev) => ({ ...prev, isRunning: false }))
+        timerStartRef.current = null
+        if (animationFrameRef.current) {
+          cancelAnimationFrame(animationFrameRef.current)
+        }
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [state.isRunning])
 
   useEffect(() => {
     const newSetTime = TIMER_MODES[state.modeIndex].seconds
-    setState((prev) => ({ ...prev, setTime: newSetTime, timeLeft: newSetTime, isRunning: false }))
+    const newTimeLeft = TIMER_MODES[state.modeIndex].seconds
+    setState((prev) => ({ ...prev, setTime: newSetTime, timeLeft: newTimeLeft, isRunning: false }))
   }, [state.modeIndex])
 
   // Add completed session handling
@@ -166,8 +217,14 @@ export default function TimeTimer() {
   }, [state.timeLeft, state.setTime])
 
   const handleDoubleTap = useCallback(() => {
+    if (state.isRunning) {
+      timerStartRef.current = null
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
     setState((prev) => ({ ...prev, isRunning: !prev.isRunning }))
-  }, [])
+  }, [state.isRunning])
 
   const handleTap = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
@@ -268,23 +325,21 @@ export default function TimeTimer() {
         <div className="flex justify-center gap-8 text-sm text-gray-600">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-red-500 rounded" />
-            <span>Work (60 min total)</span>
+            <span>Arbeid (60 min totalt)</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-green-400 rounded" />
-            <span>Break (15 min)</span>
+            <span>Pause (15 min)</span>
           </div>
         </div>
         <div className="text-center mt-4 text-sm text-gray-600">
           {(stats.currentSequence?.segmentIndex ?? 0) === 0 ? (
             <p>
-              {progressMinutes} minutes completed. Need {60 - progressMinutes} more minutes to complete the work
-              session.
+              {progressMinutes} minutt fullførte. Treng {60 - progressMinutes} minutt meir for å fullføra arbeidsøkta.
             </p>
           ) : (
             <p>
-              {progressMinutes} minutes of break taken.
-              {15 - progressMinutes} minutes of break remaining.
+              {progressMinutes} minutt pause teke. {15 - progressMinutes} minutt pause att.
             </p>
           )}
         </div>
@@ -344,7 +399,7 @@ export default function TimeTimer() {
               </div>
 
               <div className="mt-8 pb-8 border-b">
-                <h2 className="text-xl font-bold mb-6">Pomodoro Sequence</h2>
+                <h2 className="text-xl font-bold mb-6">Pomodoro-sekvens</h2>
                 {renderPomodoroSequence()}
               </div>
 

@@ -1,13 +1,12 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect, useCallback, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { GeistMono } from "geist/font/mono"
 import { Home, Info, X } from "lucide-react"
 import Image from "next/image"
-import { getTomatoStats, updateTomatoStats, type TomatoStats } from "./actions"
+import { getTomatoStats, updateTomatoStats, updateSequenceProgress, type TomatoStats } from "../lib/storage"
 
 interface TimerState {
   modeIndex: number
@@ -26,6 +25,11 @@ const TIMER_MODES = [
   { name: "60 min", seconds: 3600 },
 ]
 
+const POMODORO_SEQUENCE = [
+  { type: "work", duration: 60 },
+  { type: "break", duration: 15 },
+]
+
 function getDaysLeftInYear() {
   const now = new Date()
   const endOfYear = new Date(now.getFullYear(), 11, 31)
@@ -33,7 +37,6 @@ function getDaysLeftInYear() {
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
   return diffDays
 }
-
 function getRandomTomatoIcon() {
   const iconNumbers = Array.from({ length: 103 }, (_, i) => (i + 1).toString().padStart(2, "0"))
   const randomIndex = Math.floor(Math.random() * iconNumbers.length)
@@ -55,6 +58,7 @@ export default function TimeTimer() {
     totalCount: 0,
     lastUpdated: new Date().toISOString().split("T")[0],
     collectedDates: [],
+    currentSequence: { segmentIndex: 0, progressMinutes: 0 },
   })
 
   const [showHome, setShowHome] = useState(false)
@@ -66,7 +70,7 @@ export default function TimeTimer() {
   const tapTimer = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
-    getTomatoStats().then(setStats)
+    setStats(getTomatoStats())
   }, [])
 
   useEffect(() => {
@@ -77,7 +81,7 @@ export default function TimeTimer() {
       }, 1000)
     } else if (state.timeLeft === 0) {
       setState((prev) => ({ ...prev, isRunning: false }))
-      updateTomatoStats(stats).then(setStats)
+      setStats(updateTomatoStats(stats))
     }
     return () => clearInterval(interval)
   }, [state.isRunning, state.timeLeft, stats])
@@ -86,6 +90,20 @@ export default function TimeTimer() {
     const newSetTime = TIMER_MODES[state.modeIndex].seconds
     setState((prev) => ({ ...prev, setTime: newSetTime, timeLeft: newSetTime, isRunning: false }))
   }, [state.modeIndex])
+
+  // Add completed session handling
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout
+    if (state.timeLeft === 0 && !state.isRunning) {
+      timeoutId = setTimeout(() => {
+        const completedMinutes = state.setTime / 60
+        const updatedStats = updateSequenceProgress(stats, completedMinutes)
+        setStats(updatedStats)
+        updateTomatoStats(updatedStats)
+      }, 0)
+    }
+    return () => clearTimeout(timeoutId)
+  }, [state.timeLeft, state.isRunning, state.setTime, stats])
 
   const calculateArc = useCallback(() => {
     const percentage = state.timeLeft / state.setTime
@@ -217,6 +235,63 @@ export default function TimeTimer() {
     [state.setTime],
   )
 
+  const renderPomodoroSequence = () => {
+    const progressMinutes = stats.currentSequence?.progressMinutes ?? 0
+    return (
+      <div className="w-full max-w-2xl mx-auto">
+        <div className="flex gap-1 h-8 mb-4">
+          {POMODORO_SEQUENCE.map((period, index) => {
+            const isCurrentSegment = index === (stats.currentSequence?.segmentIndex ?? 0)
+            const isPastSegment = index < (stats.currentSequence?.segmentIndex ?? 0)
+            const progressPercentage = isCurrentSegment ? (progressMinutes / period.duration) * 100 : 0
+
+            return (
+              <div
+                key={index}
+                className="flex-1 rounded overflow-hidden relative bg-gray-100"
+                title={`${period.type === "work" ? "Work" : "Break"} - ${period.duration} minutes${
+                  isCurrentSegment ? ` (${stats.currentSequence?.progressMinutes ?? 0} minutes completed)` : ""
+                }`}
+              >
+                <div
+                  className={`absolute inset-0 transition-all duration-300 ${
+                    period.type === "work" ? "bg-red-500" : "bg-green-400"
+                  }`}
+                  style={{
+                    width: isPastSegment ? "100%" : isCurrentSegment ? `${progressPercentage}%` : "0%",
+                  }}
+                />
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex justify-center gap-8 text-sm text-gray-600">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-red-500 rounded" />
+            <span>Work (60 min total)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-green-400 rounded" />
+            <span>Break (15 min)</span>
+          </div>
+        </div>
+        <div className="text-center mt-4 text-sm text-gray-600">
+          {(stats.currentSequence?.segmentIndex ?? 0) === 0 ? (
+            <p>
+              {progressMinutes} minutes completed. Need {60 - progressMinutes} more minutes to complete the work
+              session.
+            </p>
+          ) : (
+            <p>
+              {progressMinutes} minutes of break taken.
+              {15 - progressMinutes} minutes of break remaining.
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       className={`fixed inset-0 bg-white flex items-center justify-center overflow-hidden ${GeistMono.className}`}
@@ -231,7 +306,10 @@ export default function TimeTimer() {
     >
       <div className="fixed top-4 left-4 z-50 flex items-center gap-4">
         <button
-          onClick={() => setShowHome((prev) => !prev)}
+          onClick={() => {
+            setShowHome((prev) => !prev)
+            setState((prev) => ({ ...prev, showInfo: false }))
+          }}
           className="p-2 text-gray-600 hover:text-gray-900 transition-colors relative"
         >
           <Home className="w-6 h-6" />
@@ -265,7 +343,12 @@ export default function TimeTimer() {
                 <p className="text-gray-600">dager igjen av året</p>
               </div>
 
-              <div className="mt-8">
+              <div className="mt-8 pb-8 border-b">
+                <h2 className="text-xl font-bold mb-6">Pomodoro Sequence</h2>
+                {renderPomodoroSequence()}
+              </div>
+
+              <div>
                 <h2 className="text-xl font-bold mb-4">Dine tomater</h2>
                 <div className="grid grid-cols-7 gap-2">
                   {stats.collectedDates.map((date) => (
@@ -325,7 +408,6 @@ export default function TimeTimer() {
                   <li>Å dela arbeid inn i handterlege delar</li>
                 </ul>
               </div>
-
             </div>
           </motion.div>
         )}
